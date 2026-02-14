@@ -1,0 +1,14 @@
+{
+  "name": "latex-free-eats",
+  "version": "2.0.0",
+  "description": "NYC restaurant glove transparency app for latex allergy safety",
+  "main": "server.js",
+  "type": "commonjs",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node server.js"
+  },
+  "dependencies": {
+    "express": "^4.21.2"
+  }
+}

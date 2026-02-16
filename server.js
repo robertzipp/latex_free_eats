@@ -6,7 +6,13 @@ const crypto = require('crypto');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
-const GOOGLE_PLACES_API_KEY = process.env.GOOGLE_PLACES_API_KEY;
+const rawGoogleApiKey = process.env.GOOGLE_PLACES_API_KEY || process.env.GOOGLE_MAPS_API_KEY || '';
+const GOOGLE_PLACES_API_KEY = rawGoogleApiKey.trim().replace(/^['\"]|['\"]$/g, '');
+const GOOGLE_API_KEY_SOURCE = process.env.GOOGLE_PLACES_API_KEY
+  ? 'GOOGLE_PLACES_API_KEY'
+  : process.env.GOOGLE_MAPS_API_KEY
+    ? 'GOOGLE_MAPS_API_KEY'
+    : null;
 const DATA_FILE = path.join(__dirname, 'data', 'submissions.json');
 
 const ALLOWED_GLOVE_TYPES = ['vinyl', 'nitrile', 'latex', 'none'];
@@ -84,7 +90,14 @@ async function fetchGoogleRestaurants(searchTerm = 'restaurants') {
 
   const query = encodeURIComponent(`${searchTerm} in New York City`);
   const url = `https://maps.googleapis.com/maps/api/place/textsearch/json?query=${query}&key=${GOOGLE_PLACES_API_KEY}`;
-  const response = await fetch(url);
+  let response;
+  try {
+    response = await fetch(url);
+  } catch (error) {
+    throw new Error(
+      `Could not reach Google Places API (${error.message}). Check outbound network access and firewall/proxy rules.`
+    );
+  }
 
   if (!response.ok) {
     throw new Error(`Google Places API request failed with status ${response.status}`);
@@ -92,7 +105,10 @@ async function fetchGoogleRestaurants(searchTerm = 'restaurants') {
 
   const payload = await response.json();
   if (payload.status !== 'OK' && payload.status !== 'ZERO_RESULTS') {
-    throw new Error(`Google Places API error: ${payload.status}`);
+    const detail = payload.error_message ? ` ${payload.error_message}` : '';
+    throw new Error(
+      `Google Places API error: ${payload.status}.${detail} Ensure Places API is enabled and billing/key restrictions allow Places Text Search.`
+    );
   }
 
   return (payload.results || []).map((place) => ({
@@ -117,6 +133,7 @@ app.get('/api/restaurants', async (req, res) => {
     res.json({
       source: GOOGLE_PLACES_API_KEY ? 'google_places_api' : 'sample_data_no_api_key',
       googleApiConfigured: Boolean(GOOGLE_PLACES_API_KEY),
+      googleApiKeySource: GOOGLE_API_KEY_SOURCE,
       restaurants: merged
     });
   } catch (error) {

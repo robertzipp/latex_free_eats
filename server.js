@@ -1,11 +1,13 @@
 require('dotenv').config();
 const express = require('express');
-const fs = require('fs/promises');
 const path = require('path');
 const crypto = require('crypto');
+const { Pool } = require('pg');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
+const FRONTEND_DIST = path.join(__dirname, 'frontend', 'dist');
+
 const rawGoogleApiKey = process.env.GOOGLE_PLACES_API_KEY || process.env.GOOGLE_MAPS_API_KEY || '';
 const GOOGLE_PLACES_API_KEY = rawGoogleApiKey.trim().replace(/^['\"]|['\"]$/g, '');
 const GOOGLE_API_KEY_SOURCE = process.env.GOOGLE_PLACES_API_KEY
@@ -13,41 +15,59 @@ const GOOGLE_API_KEY_SOURCE = process.env.GOOGLE_PLACES_API_KEY
   : process.env.GOOGLE_MAPS_API_KEY
     ? 'GOOGLE_MAPS_API_KEY'
     : null;
-const DATA_FILE = path.join(__dirname, 'data', 'submissions.json');
 
 const ALLOWED_GLOVE_TYPES = ['vinyl', 'nitrile', 'latex', 'none'];
 
+const pool = new Pool({
+  connectionString: process.env.DATABASE_URL,
+  ssl: process.env.NODE_ENV === 'production' ? { rejectUnauthorized: false } : false
+});
+
 app.use(express.json());
-app.use(express.static(path.join(__dirname, 'public')));
+app.use(express.static(FRONTEND_DIST));
 
-async function ensureDataFile() {
-  try {
-    await fs.access(DATA_FILE);
-  } catch {
-    await fs.mkdir(path.dirname(DATA_FILE), { recursive: true });
-    await fs.writeFile(DATA_FILE, JSON.stringify({ submissions: [] }, null, 2));
+async function initializeDatabase() {
+  if (!process.env.DATABASE_URL) {
+    throw new Error('DATABASE_URL is not set. Please configure your PostgreSQL connection string.');
   }
+
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS submissions (
+      id UUID PRIMARY KEY,
+      place_id TEXT NOT NULL,
+      restaurant_name TEXT NOT NULL,
+      address TEXT NOT NULL,
+      glove_type TEXT NOT NULL CHECK (glove_type IN ('vinyl', 'nitrile', 'latex', 'none')),
+      notes TEXT DEFAULT '',
+      submitted_by TEXT DEFAULT 'anonymous',
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
+  `);
 }
 
-async function readSubmissions() {
-  await ensureDataFile();
-  const raw = await fs.readFile(DATA_FILE, 'utf8');
-  const parsed = JSON.parse(raw);
-  return Array.isArray(parsed.submissions) ? parsed.submissions : [];
-}
-
-async function writeSubmissions(submissions) {
-  await fs.writeFile(DATA_FILE, JSON.stringify({ submissions }, null, 2));
+function toApiSubmission(row) {
+  return {
+    id: row.id,
+    placeId: row.place_id,
+    restaurantName: row.restaurant_name,
+    address: row.address,
+    gloveType: row.glove_type,
+    notes: row.notes,
+    submittedBy: row.submitted_by,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at
+  };
 }
 
 function aggregateGloveInfo(submissions) {
   const byPlace = new Map();
 
-  for (const s of submissions) {
-    if (!byPlace.has(s.placeId)) {
-      byPlace.set(s.placeId, []);
+  for (const submission of submissions) {
+    if (!byPlace.has(submission.placeId)) {
+      byPlace.set(submission.placeId, []);
     }
-    byPlace.get(s.placeId).push(s);
+    byPlace.get(submission.placeId).push(submission);
   }
 
   const aggregated = new Map();
@@ -91,12 +111,11 @@ async function fetchGoogleRestaurants(searchTerm = 'restaurants') {
   const query = encodeURIComponent(`${searchTerm} in New York City`);
   const url = `https://maps.googleapis.com/maps/api/place/textsearch/json?query=${query}&key=${GOOGLE_PLACES_API_KEY}`;
   let response;
+
   try {
     response = await fetch(url);
   } catch (error) {
-    throw new Error(
-      `Could not reach Google Places API (${error.message}). Check outbound network access and firewall/proxy rules.`
-    );
+    throw new Error(`Could not reach Google Places API (${error.message}).`);
   }
 
   if (!response.ok) {
@@ -106,9 +125,7 @@ async function fetchGoogleRestaurants(searchTerm = 'restaurants') {
   const payload = await response.json();
   if (payload.status !== 'OK' && payload.status !== 'ZERO_RESULTS') {
     const detail = payload.error_message ? ` ${payload.error_message}` : '';
-    throw new Error(
-      `Google Places API error: ${payload.status}.${detail} Ensure Places API is enabled and billing/key restrictions allow Places Text Search.`
-    );
+    throw new Error(`Google Places API error: ${payload.status}.${detail}`);
   }
 
   return (payload.results || []).map((place) => ({
@@ -122,8 +139,13 @@ async function fetchGoogleRestaurants(searchTerm = 'restaurants') {
 app.get('/api/restaurants', async (req, res) => {
   try {
     const query = (req.query.query || 'restaurants').toString();
-    const [restaurants, submissions] = await Promise.all([fetchGoogleRestaurants(query), readSubmissions()]);
-    const gloveMap = aggregateGloveInfo(submissions);
+    const submissionsResult = await pool.query('SELECT * FROM submissions ORDER BY created_at DESC;');
+    const submissions = submissionsResult.rows.map(toApiSubmission);
+
+    const [restaurants, gloveMap] = await Promise.all([
+      fetchGoogleRestaurants(query),
+      Promise.resolve(aggregateGloveInfo(submissions))
+    ]);
 
     const merged = restaurants.map((restaurant) => ({
       ...restaurant,
@@ -143,25 +165,41 @@ app.get('/api/restaurants', async (req, res) => {
 
 app.get('/api/submissions', async (req, res) => {
   try {
-    const all = await readSubmissions();
     const placeId = req.query.placeId;
-    const filtered = placeId ? all.filter((s) => s.placeId === placeId) : all;
-    res.json({ submissions: filtered });
+    const hasPlaceFilter = Boolean(placeId);
+    const query = hasPlaceFilter
+      ? {
+          text: 'SELECT * FROM submissions WHERE place_id = $1 ORDER BY created_at DESC;',
+          values: [placeId]
+        }
+      : {
+          text: 'SELECT * FROM submissions ORDER BY created_at DESC;',
+          values: []
+        };
+
+    const result = await pool.query(query);
+    res.json({ submissions: result.rows.map(toApiSubmission) });
   } catch {
     res.status(500).json({ error: 'Failed to load submissions.' });
   }
 });
 
+app.get('/api/submissions/:id', async (req, res) => {
+  try {
+    const result = await pool.query('SELECT * FROM submissions WHERE id = $1;', [req.params.id]);
+    if (result.rowCount === 0) {
+      return res.status(404).json({ error: 'Submission not found.' });
+    }
+
+    return res.json({ submission: toApiSubmission(result.rows[0]) });
+  } catch {
+    return res.status(500).json({ error: 'Failed to load submission.' });
+  }
+});
+
 app.post('/api/submissions', async (req, res) => {
   try {
-    const {
-      placeId,
-      restaurantName,
-      address,
-      gloveType,
-      notes = '',
-      submittedBy = 'anonymous'
-    } = req.body;
+    const { placeId, restaurantName, address, gloveType, notes = '', submittedBy = 'anonymous' } = req.body;
 
     if (!placeId || !restaurantName || !address) {
       return res.status(400).json({ error: 'placeId, restaurantName, and address are required.' });
@@ -173,7 +211,6 @@ app.post('/api/submissions', async (req, res) => {
       });
     }
 
-    const submissions = await readSubmissions();
     const submission = {
       id: crypto.randomUUID(),
       placeId,
@@ -181,21 +218,88 @@ app.post('/api/submissions', async (req, res) => {
       address,
       gloveType,
       notes,
-      submittedBy,
-      createdAt: new Date().toISOString()
+      submittedBy
     };
 
-    submissions.push(submission);
-    await writeSubmissions(submissions);
+    const createdResult = await pool.query(
+      `
+      INSERT INTO submissions (
+        id, place_id, restaurant_name, address, glove_type, notes, submitted_by
+      ) VALUES ($1, $2, $3, $4, $5, $6, $7)
+      RETURNING *;
+      `,
+      [
+        submission.id,
+        submission.placeId,
+        submission.restaurantName,
+        submission.address,
+        submission.gloveType,
+        submission.notes,
+        submission.submittedBy
+      ]
+    );
 
-    res.status(201).json({ message: 'Submission saved.', submission });
+    return res.status(201).json({ message: 'Submission saved.', submission: toApiSubmission(createdResult.rows[0]) });
   } catch {
-    res.status(500).json({ error: 'Failed to save submission.' });
+    return res.status(500).json({ error: 'Failed to save submission.' });
   }
 });
 
-ensureDataFile().then(() => {
-  app.listen(PORT, () => {
-    console.log(`Latex Free Eats running at http://localhost:${PORT}`);
-  });
+app.put('/api/submissions/:id', async (req, res) => {
+  try {
+    const { gloveType, notes = '', submittedBy = 'anonymous' } = req.body;
+
+    if (!ALLOWED_GLOVE_TYPES.includes(gloveType)) {
+      return res.status(400).json({ error: `gloveType must be one of: ${ALLOWED_GLOVE_TYPES.join(', ')}` });
+    }
+
+    const updatedResult = await pool.query(
+      `
+      UPDATE submissions
+      SET glove_type = $2,
+          notes = $3,
+          submitted_by = $4,
+          updated_at = NOW()
+      WHERE id = $1
+      RETURNING *;
+      `,
+      [req.params.id, gloveType, notes, submittedBy]
+    );
+
+    if (updatedResult.rowCount === 0) {
+      return res.status(404).json({ error: 'Submission not found.' });
+    }
+
+    return res.json({ message: 'Submission updated.', submission: toApiSubmission(updatedResult.rows[0]) });
+  } catch {
+    return res.status(500).json({ error: 'Failed to update submission.' });
+  }
 });
+
+app.delete('/api/submissions/:id', async (req, res) => {
+  try {
+    const deleteResult = await pool.query('DELETE FROM submissions WHERE id = $1 RETURNING id;', [req.params.id]);
+    if (deleteResult.rowCount === 0) {
+      return res.status(404).json({ error: 'Submission not found.' });
+    }
+
+    return res.json({ message: 'Submission deleted.', id: deleteResult.rows[0].id });
+  } catch {
+    return res.status(500).json({ error: 'Failed to delete submission.' });
+  }
+});
+
+app.get('*', (req, res) => {
+  res.sendFile(path.join(FRONTEND_DIST, 'index.html'));
+});
+
+initializeDatabase()
+  .then(() => {
+    app.listen(PORT, () => {
+      console.log(`Latex Free Eats running at http://localhost:${PORT}`);
+    });
+  })
+  .catch((error) => {
+    console.error('Failed to initialize database:', error.message);
+    process.exit(1);
+  });

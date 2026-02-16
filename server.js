@@ -184,6 +184,46 @@ app.get('/api/submissions', async (req, res) => {
   }
 });
 
+app.get('/api/reported-restaurants', async (req, res) => {
+  try {
+    const result = await pool.query('SELECT * FROM submissions ORDER BY created_at DESC;');
+    const submissions = result.rows.map(toApiSubmission);
+    const groupedByPlace = new Map();
+
+    for (const submission of submissions) {
+      if (!groupedByPlace.has(submission.placeId)) {
+        groupedByPlace.set(submission.placeId, []);
+      }
+      groupedByPlace.get(submission.placeId).push(submission);
+    }
+
+    const restaurants = [...groupedByPlace.entries()].map(([placeId, list]) => {
+      const latest = [...list].sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt))[0];
+      const gloveTypeCounts = list.reduce((acc, item) => {
+        acc[item.gloveType] = (acc[item.gloveType] || 0) + 1;
+        return acc;
+      }, {});
+
+      return {
+        place_id: placeId,
+        name: latest.restaurantName,
+        formatted_address: latest.address,
+        gloveInfo: {
+          latestGloveType: latest.gloveType,
+          latestNotes: latest.notes,
+          latestSubmittedAt: latest.createdAt,
+          submissionCount: list.length,
+          gloveTypeCounts
+        }
+      };
+    });
+
+    res.json({ restaurants });
+  } catch {
+    res.status(500).json({ error: 'Failed to load reported restaurants.' });
+  }
+});
+
 app.get('/api/submissions/:id', async (req, res) => {
   try {
     const result = await pool.query('SELECT * FROM submissions WHERE id = $1;', [req.params.id]);

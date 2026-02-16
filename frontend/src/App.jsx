@@ -27,11 +27,14 @@ function gloveLabel(gloveType) {
 
 function App() {
   const [query, setQuery] = useState('restaurants');
-  const [restaurants, setRestaurants] = useState([]);
+  const [searchRestaurants, setSearchRestaurants] = useState([]);
+  const [reportedRestaurants, setReportedRestaurants] = useState([]);
   const [source, setSource] = useState('');
   const [googleApiConfigured, setGoogleApiConfigured] = useState(false);
-  const [loading, setLoading] = useState(false);
+  const [searchLoading, setSearchLoading] = useState(false);
+  const [reportedLoading, setReportedLoading] = useState(false);
   const [error, setError] = useState('');
+  const [reportedError, setReportedError] = useState('');
   const [hideLatex, setHideLatex] = useState(false);
   const [submitStatus, setSubmitStatus] = useState('');
   const [formData, setFormData] = useState({
@@ -43,13 +46,19 @@ function App() {
     notes: ''
   });
 
-  const filteredRestaurants = useMemo(() => {
-    if (!hideLatex) return restaurants;
-    return restaurants.filter((r) => r.gloveInfo?.latestGloveType !== 'latex');
-  }, [restaurants, hideLatex]);
+  const filteredSearchRestaurants = useMemo(() => {
+    const withoutReports = searchRestaurants.filter((r) => !r.gloveInfo);
+    if (!hideLatex) return withoutReports;
+    return withoutReports.filter((r) => r.gloveInfo?.latestGloveType !== 'latex');
+  }, [searchRestaurants, hideLatex]);
 
-  async function loadRestaurants(searchQuery = query) {
-    setLoading(true);
+  const filteredReportedRestaurants = useMemo(() => {
+    if (!hideLatex) return reportedRestaurants;
+    return reportedRestaurants.filter((r) => r.gloveInfo?.latestGloveType !== 'latex');
+  }, [reportedRestaurants, hideLatex]);
+
+  async function loadSearchRestaurants(searchQuery = query) {
+    setSearchLoading(true);
     setError('');
     try {
       const response = await fetch(`/api/restaurants?query=${encodeURIComponent(searchQuery)}`);
@@ -57,18 +66,36 @@ function App() {
       if (!response.ok) {
         throw new Error(data.error || 'Failed to fetch restaurants.');
       }
-      setRestaurants(data.restaurants || []);
+      setSearchRestaurants(data.restaurants || []);
       setSource(data.source || '');
       setGoogleApiConfigured(Boolean(data.googleApiConfigured));
     } catch (err) {
       setError(err.message);
     } finally {
-      setLoading(false);
+      setSearchLoading(false);
+    }
+  }
+
+  async function loadReportedRestaurants() {
+    setReportedLoading(true);
+    setReportedError('');
+    try {
+      const response = await fetch('/api/reported-restaurants');
+      const data = await response.json();
+      if (!response.ok) {
+        throw new Error(data.error || 'Failed to fetch reported restaurants.');
+      }
+      setReportedRestaurants(data.restaurants || []);
+    } catch (err) {
+      setReportedError(err.message);
+    } finally {
+      setReportedLoading(false);
     }
   }
 
   useEffect(() => {
-    loadRestaurants();
+    loadSearchRestaurants();
+    loadReportedRestaurants();
   }, []);
 
   function prefillFromRestaurant(restaurant) {
@@ -106,7 +133,8 @@ function App() {
       submittedBy: '',
       notes: ''
     });
-    loadRestaurants();
+    loadSearchRestaurants();
+    loadReportedRestaurants();
   }
 
   return (
@@ -121,6 +149,7 @@ function App() {
 
       <div className="card mb-4 shadow-sm">
         <div className="card-body">
+          <h2 className="h4">Search Google Maps for New Restaurants (No Reports Yet)</h2>
           <div className="row g-2 align-items-center">
             <div className="col-md-6">
               <input
@@ -131,7 +160,7 @@ function App() {
               />
             </div>
             <div className="col-md-auto">
-              <button className="btn btn-primary" onClick={() => loadRestaurants(query)}>
+              <button className="btn btn-primary" onClick={() => loadSearchRestaurants(query)}>
                 Search NYC Restaurants
               </button>
             </div>
@@ -156,27 +185,50 @@ function App() {
             </div>
           )}
           {source === 'google_places_api' && (
-            <div className="alert alert-success mt-3 mb-0">
-              Connected to live Google Places data for NYC.
-            </div>
+            <div className="alert alert-success mt-3 mb-0">Connected to live Google Places data for NYC.</div>
           )}
         </div>
       </div>
 
       <div className="mb-4">
-        <h2 className="h4">Restaurant Results</h2>
+        <h2 className="h4">Search Results Without Reports</h2>
         {!googleApiConfigured && (
           <p className="small text-muted">
             Google API key is not configured on the server process, so results are mocked.
           </p>
         )}
-        {loading && <p className="text-muted">Loading restaurants...</p>}
+        {searchLoading && <p className="text-muted">Loading restaurants...</p>}
         {error && <div className="alert alert-danger">{error}</div>}
-        {!loading && !error && filteredRestaurants.length === 0 && (
-          <p className="text-muted">No restaurants match your filter.</p>
+        {!searchLoading && !error && filteredSearchRestaurants.length === 0 && (
+          <p className="text-muted">No unreported restaurants match your filter.</p>
         )}
         <div className="row g-3">
-          {filteredRestaurants.map((r) => {
+          {filteredSearchRestaurants.map((r) => (
+            <div className="col-12" key={r.place_id}>
+              <div className="card shadow-sm">
+                <div className="card-body">
+                  <h3 className="h5 card-title mb-1">{r.name}</h3>
+                  <p className="card-text mb-1 text-muted">{r.formatted_address}</p>
+                  <p className="card-text mb-3">Rating: {r.rating ?? 'N/A'}</p>
+                  <button className="btn btn-outline-primary btn-sm" onClick={() => prefillFromRestaurant(r)}>
+                    Be the first to report this restaurant
+                  </button>
+                </div>
+              </div>
+            </div>
+          ))}
+        </div>
+      </div>
+
+      <div className="mb-4">
+        <h2 className="h4">Restaurants With Existing Glove Reports (Global)</h2>
+        {reportedLoading && <p className="text-muted">Loading reported restaurants...</p>}
+        {reportedError && <div className="alert alert-danger">{reportedError}</div>}
+        {!reportedLoading && !reportedError && filteredReportedRestaurants.length === 0 && (
+          <p className="text-muted">No reported restaurants yet.</p>
+        )}
+        <div className="row g-3">
+          {filteredReportedRestaurants.map((r) => {
             const latest = r.gloveInfo?.latestGloveType;
             const latexClass = latest === 'latex' ? 'border-danger border-2' : '';
             return (
@@ -185,7 +237,6 @@ function App() {
                   <div className="card-body">
                     <h3 className="h5 card-title mb-1">{r.name}</h3>
                     <p className="card-text mb-1 text-muted">{r.formatted_address}</p>
-                    <p className="card-text mb-2">Rating: {r.rating ?? 'N/A'}</p>
                     <p className="mb-2">
                       <span className={`badge ${badgeClass(latest)}`}>{gloveLabel(latest)}</span>
                     </p>
@@ -202,7 +253,7 @@ function App() {
                       </p>
                     )}
                     <button className="btn btn-outline-primary btn-sm" onClick={() => prefillFromRestaurant(r)}>
-                      Report this restaurant
+                      Add another report
                     </button>
                   </div>
                 </div>
@@ -287,3 +338,4 @@ function App() {
   );
 }
 
+export default App;

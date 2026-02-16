@@ -1,52 +1,97 @@
 # Latex Free Eats NYC
 
-A web app to help people with latex allergies find NYC restaurants and track kitchen food-prep glove usage.
+A full-stack app to help people with latex allergies find NYC restaurants and track kitchen glove usage.
 
-## Stack
-- **Express.js** API/server
-- **React** frontend (loaded via CDN)
-- **Bootstrap 5** UI styling
+## Monorepo Structure
 
-## Features
-- Search New York City restaurants via Google Places Text Search API.
-- View latest crowd-sourced glove report per restaurant (`vinyl`, `nitrile`, `latex`, `none`).
-- Highlight and optionally hide restaurants with latest `latex` report.
-- Submit new glove information for any restaurant.
-- Persist submissions in `data/submissions.json`.
-- Fallback sample restaurant data when `GOOGLE_PLACES_API_KEY` is not set.
+- `server.js`: Node/Express API + static hosting for the React production build.
+- `frontend/`: React application (Vite).
+- `db/schema.sql`: PostgreSQL schema for the app.
 
-## Setup
-```bash
-npm install
-GOOGLE_PLACES_API_KEY=your_key_here npm start
+## Tech Stack
+
+- **Frontend:** React + Vite + Bootstrap
+- **Backend:** Node.js + Express
+- **Database:** PostgreSQL via `pg`
+
+## Environment Variables
+
+Create a `.env` file in the project root:
+
+```env
+DATABASE_URL=postgresql://USER:PASSWORD@HOST:5432/DBNAME
+GOOGLE_PLACES_API_KEY=your_google_places_key
+PORT=3000
 ```
 
-Open: http://localhost:3000
+`DATABASE_URL` is required.
 
-### Example run with an API key
+## Local Development
+
 ```bash
-export GOOGLE_PLACES_API_KEY="<your_google_places_key>"
+npm install
+npm run build
 npm start
 ```
 
-## API
-- `GET /api/restaurants?query=sushi`
-- `GET /api/submissions?placeId=<google_place_id>`
-- `POST /api/submissions`
+- `npm run build` builds the React frontend into `frontend/dist`.
+- `npm start` runs Node and serves API + React build from one process.
 
-## Environment variables
-Create a `.env` file in the project root with **one key/value per line**:
+## PostgreSQL Schema / Migration
 
-```env
-GOOGLE_PLACES_API_KEY=your_google_places_key
+Use the schema file:
+
+```bash
+psql "$DATABASE_URL" -f db/schema.sql
 ```
 
-`GOOGLE_MAPS_API_KEY` is also accepted as a fallback name.
+The server also runs a startup `CREATE TABLE IF NOT EXISTS` safeguard.
 
-## Troubleshooting Google API
-If the UI does not show live Google data:
+## API (PostgreSQL-backed CRUD)
 
-1. Confirm `/api/restaurants` returns `"googleApiConfigured": true`.
-2. Confirm your key has **Places API** enabled and billing is active.
-3. Confirm key restrictions allow **Places Text Search** from this server environment.
-4. If the API request fails with a network error, your server cannot reach `maps.googleapis.com` (proxy/firewall issue).
+- `GET /api/restaurants?query=sushi` (restaurant search + glove summary)
+- `GET /api/submissions` (list all submissions)
+- `GET /api/submissions?placeId=<google_place_id>` (list by place)
+- `GET /api/submissions/:id` (get one)
+- `POST /api/submissions` (create)
+- `PUT /api/submissions/:id` (update gloveType/notes/submittedBy)
+- `DELETE /api/submissions/:id` (delete)
+
+Example create payload:
+
+```json
+{
+  "placeId": "abc123",
+  "restaurantName": "Example Deli",
+  "address": "123 Main St, New York, NY",
+  "gloveType": "nitrile",
+  "notes": "Kitchen confirmed nitrile",
+  "submittedBy": "alex"
+}
+```
+
+## Deploy on Render.com
+
+1. **Push this repo to GitHub.**
+2. **Create a PostgreSQL database in Render:**
+   - Render Dashboard → **New** → **PostgreSQL**
+   - choose name/region/plan and create it.
+3. **Create a Web Service in Render:**
+   - Render Dashboard → **New** → **Web Service**
+   - connect your repository/branch.
+4. **Configure build and start commands:**
+   - **Build Command:** `npm install && npm run build`
+   - **Start Command:** `npm start`
+5. **Set environment variables in Web Service:**
+   - `DATABASE_URL` = Internal Database URL from your Render PostgreSQL instance.
+   - `GOOGLE_PLACES_API_KEY` (optional but recommended for live data)
+   - `NODE_ENV=production`
+6. **Deploy.**
+   - Render builds frontend assets and starts the Node server.
+   - Node serves static React files from `frontend/dist` and API routes from `/api/*`.
+
+## Render Notes
+
+- Keep the backend and frontend in one service for simplest deployment.
+- Use Render's generated Postgres URL directly as `DATABASE_URL`.
+- If Google API key is missing, `/api/restaurants` returns sample restaurant data.

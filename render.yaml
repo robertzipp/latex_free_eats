@@ -1,0 +1,18 @@
+services:
+  - type: web
+    name: latex-free-eats
+    env: node
+    plan: starter
+    buildCommand: npm install && npm run build
+    startCommand: npm start
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: DATABASE_URL
+        fromDatabase:
+          name: latex-free-eats-db
+          property: connectionString
+
+databases:
+  - name: latex-free-eats-db
+    plan: starter

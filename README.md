@@ -51,6 +51,7 @@ The server also runs a startup `CREATE TABLE IF NOT EXISTS` safeguard.
 ## API (PostgreSQL-backed CRUD)
 
 - `GET /api/restaurants?query=sushi` (restaurant search + glove summary)
+- `GET /api/google-places-diagnostics` (verifies current server key against Google and returns troubleshooting guidance)
 - `GET /api/submissions` (list all submissions)
 - `GET /api/submissions?placeId=<google_place_id>` (list by place)
 - `GET /api/submissions/:id` (get one)
@@ -96,3 +97,5 @@ Example create payload:
 - Keep the backend and frontend in one service for simplest deployment.
 - Use Render's generated Postgres URL directly as `DATABASE_URL`.
 - If Google API key is missing, `/api/restaurants` returns sample restaurant data.
+
+- If Render has a key set but Google returns `REQUEST_DENIED`, call `/api/google-places-diagnostics` to confirm what Google status/error is returned from the server runtime and review the `guidance` field.

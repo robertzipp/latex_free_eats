@@ -90,6 +90,25 @@ function aggregateGloveInfo(submissions) {
   return aggregated;
 }
 
+function redactKey(key) {
+  if (!key) return null;
+  if (key.length <= 8) return `${key.slice(0, 2)}***${key.slice(-2)}`;
+  return `${key.slice(0, 4)}...${key.slice(-4)}`;
+}
+
+function parseGoogleStatusDetails(status, errorMessage) {
+  if (status === 'REQUEST_DENIED') {
+    return [
+      'Google rejected the request (REQUEST_DENIED).',
+      'If this key works locally but fails on Render, verify key restrictions are compatible with server-to-server requests.',
+      'Browser (HTTP referrer) restrictions usually fail from backend calls. Prefer API restriction + billing + enabled Places API in the same Google project as this key.',
+      `Google error: ${errorMessage || 'No additional details were returned.'}`
+    ].join(' ');
+  }
+
+  return errorMessage || 'No additional details were returned.';
+}
+
 async function fetchGoogleRestaurants(searchTerm = 'restaurants') {
   if (!GOOGLE_PLACES_API_KEY) {
     return [
@@ -124,8 +143,8 @@ async function fetchGoogleRestaurants(searchTerm = 'restaurants') {
 
   const payload = await response.json();
   if (payload.status !== 'OK' && payload.status !== 'ZERO_RESULTS') {
-    const detail = payload.error_message ? ` ${payload.error_message}` : '';
-    throw new Error(`Google Places API error: ${payload.status}.${detail}`);
+    const detail = parseGoogleStatusDetails(payload.status, payload.error_message);
+    throw new Error(`Google Places API error: ${payload.status}. ${detail}`);
   }
 
   return (payload.results || []).map((place) => ({
@@ -134,6 +153,46 @@ async function fetchGoogleRestaurants(searchTerm = 'restaurants') {
     formatted_address: place.formatted_address,
     rating: place.rating ?? null
   }));
+}
+
+async function runGooglePlacesDiagnostic(query = 'restaurants in New York City') {
+  if (!GOOGLE_PLACES_API_KEY) {
+    return {
+      ok: false,
+      reason: 'GOOGLE_PLACES_API_KEY (or GOOGLE_MAPS_API_KEY) is not configured.'
+    };
+  }
+
+  const encoded = encodeURIComponent(query);
+  const url = `https://maps.googleapis.com/maps/api/place/textsearch/json?query=${encoded}&key=${GOOGLE_PLACES_API_KEY}`;
+
+  let response;
+  try {
+    response = await fetch(url);
+  } catch (error) {
+    return {
+      ok: false,
+      reason: `Network error reaching Google Places API: ${error.message}`
+    };
+  }
+
+  let payload = null;
+  try {
+    payload = await response.json();
+  } catch {
+    payload = null;
+  }
+
+  const status = payload?.status || 'UNKNOWN';
+  const errorMessage = payload?.error_message || null;
+
+  return {
+    ok: response.ok && (status === 'OK' || status === 'ZERO_RESULTS'),
+    httpStatus: response.status,
+    placesStatus: status,
+    errorMessage,
+    guidance: parseGoogleStatusDetails(status, errorMessage)
+  };
 }
 
 app.get('/api/restaurants', async (req, res) => {
@@ -160,6 +219,21 @@ app.get('/api/restaurants', async (req, res) => {
     });
   } catch (error) {
     res.status(500).json({ error: error.message || 'Failed to load restaurants.' });
+  }
+});
+
+app.get('/api/google-places-diagnostics', async (req, res) => {
+  try {
+    const diagnostic = await runGooglePlacesDiagnostic((req.query.query || 'restaurants in New York City').toString());
+
+    res.json({
+      googleApiConfigured: Boolean(GOOGLE_PLACES_API_KEY),
+      googleApiKeySource: GOOGLE_API_KEY_SOURCE,
+      googleApiKeyPreview: redactKey(GOOGLE_PLACES_API_KEY),
+      diagnostic
+    });
+  } catch (error) {
+    res.status(500).json({ error: error.message || 'Failed to run Google Places diagnostics.' });
   }
 });
 

@@ -6,6 +6,7 @@ A full-stack app to help people with latex allergies find NYC restaurants and tr
 
 - `server.js`: Node/Express API + static hosting for the React production build.
 - `frontend/`: React application (Vite).
+- Legacy `public/` CDN/Babel frontend files were removed so there is a single frontend path.
 - `db/schema.sql`: PostgreSQL schema for the app.
 
 ## Tech Stack
